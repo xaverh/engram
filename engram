@@ -1,0 +1,107 @@
+#!/usr/bin/zsh
+
+# Enable error handling and modern Zsh features
+set -e               # Exit on error
+setopt extended_glob # Enable extended globbing
+
+# Configuration (read-only constants)
+typeset -r OPT_BASE="/opt"
+typeset -r STOW_DIR="/usr/local"
+
+# Check for root privileges
+(( $EUID != 0 )) && { print "This script must be run as root to manage $OPT_BASE and $STOW_DIR."; exit 1 }
+
+# Check for stow dependency
+(( $+commands[stow] )) || { print "stow is required. Install it first."; exit 1 }
+
+# Usage function
+usage() {
+	print "Usage: engram {install|in|i|update|up|u|remove|rm|r} <package-name> [version#build]"
+	print "  install|in|i: Stow a specific version and build as the active one."
+	print "  update|up|u: Stow the latest version/build if no version#build given, or specified version#build."
+	print "  remove|rm|r: Unstow a specific version/build and optionally delete it."
+	print "Examples:"
+	print "  engram i vivaldi-browser 2.10.1745.26-1#1731792000"
+	print "  engram u vivaldi-browser"
+	print "  engram up vivaldi-browser 2.10.1745.26-1#1731792000"
+	print "  engram r vivaldi-browser 2.10.1745.26-1#1731792000"
+    exit 1
+}
+
+# Get the latest version/build using Zsh native sorting
+get_latest_version_build() {
+	local pkgname="$1"
+	local -a versions=("${OPT_BASE}/${pkgname}@*(/on)")  # / for directories, o for order, n for numeric
+	(( $#versions == 0 )) && return 1
+	print "${versions[-1]##*/}"  # Last element after sorting, basename
+}
+
+# Action functions
+install_pkg() {
+	local pkgname="$1" version_build="$2"
+	[[ -z "$version_build" ]] && { print "Error: Version#build required for install."; usage }
+	local pkg_dir="${OPT_BASE}/${pkgname}@${version_build}"
+	[[ -d "$pkg_dir" ]] || { print "Error: $pkg_dir does not exist."; exit 1 }
+	print "Installing $pkgname@$version_build..."
+	pushd "$OPT_BASE" >/dev/null
+	for dir in "${OPT_BASE}/${pkgname}@*"(/); do
+		[[ "$dir" != "$pkg_dir" ]] && sudo stow -D -t "$STOW_DIR" "${dir##*/}" 2>/dev/null || :
+	done
+	sudo stow -t "$STOW_DIR" "${pkgname}@${version_build}"
+	popd >/dev/null
+	print "$pkgname@$version_build is now active in $STOW_DIR."
+}
+
+update_pkg() {
+	local pkgname="$1" version_build="$2"
+	local target
+	if [[ -n "$version_build" ]]; then
+		target="${pkgname}@${version_build}"
+		[[ -d "${OPT_BASE}/${target}" ]] || { print "Error: ${OPT_BASE}/${target} does not exist."; exit 1 }
+	else
+        	target=$(get_latest_version_build "$pkgname") || { print "Error: No versions of $pkgname found in $OPT_BASE."; exit 1 }
+	fi
+ 	print "Updating to $target..."
+	pushd "$OPT_BASE" >/dev/null
+	for dir in "${OPT_BASE}/${pkgname}@*"(/); do
+ 		[[ "${dir##*/}" != "$target" ]] && sudo stow -D -t "$STOW_DIR" "${dir##*/}" 2>/dev/null || :
+	done
+	sudo stow -t "$STOW_DIR" "$target"
+	popd >/dev/null
+	print "$target is now active in $STOW_DIR."
+}
+
+remove_pkg() {
+	local pkgname="$1" version_build="$2"
+	[[ -z "$version_build" ]] && { print "Error: Version#build required for remove."; usage }
+	local pkg_dir="${OPT_BASE}/${pkgname}@${version_build}"
+	[[ -d "$pkg_dir" ]] || { print "Error: $pkg_dir does not exist."; exit 1 }
+	print "Removing $pkgname@$version_build..."
+	pushd "$OPT_BASE" >/dev/null
+	sudo stow -D -t "$STOW_DIR" "${pkgname}@${version_build}" 2>/dev/null || print "No stow to remove."
+	rm -rf "$pkg_dir"
+	print "$pkg_dir deleted."
+	local latest
+	latest=$(get_latest_version_build "$pkgname") || {
+		print "No remaining versions of $pkgname to stow."
+		popd >/dev/null
+		return 0
+	}
+	print "Stowing latest remaining version/build: $latest..."
+	sudo stow -t "$STOW_DIR" "$latest" || print "Warning: Failed to stow $latest."
+	popd >/dev/null
+}
+
+# Action mappings with associative array
+typeset -A actions
+actions=(
+	install install_pkg  in install_pkg  i install_pkg
+	update  update_pkg   up update_pkg   u update_pkg
+	remove  remove_pkg   rm remove_pkg   r remove_pkg
+)
+
+# Execute action
+local action="$1" pkgname="$2" version_build="$3"
+[[ -z "$action" || -z "$pkgname" ]] && usage
+[[ -n "${actions[$action]}" ]] || usage
+"${actions[$action]}" "$pkgname" "$version_build"
