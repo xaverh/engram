@@ -1,0 +1,79 @@
+#!/bin/zsh
+
+# Enable error handling and modern Zsh features
+set -e               # Exit on error
+setopt extended_glob # Enable extended globbing
+
+# Package metadata (read-only constants)
+typeset -r PKGNAME="vivaldi-browser"
+typeset -r VERSION="${VERSION:-$(curl -s https://vivaldi.com/download/ | while read -r line; do [[ $line =~ vivaldi-stable-([0-9.-]+)\.x86_64\.rpm ]] && print "${match[1]}"; done | head -n 1)}"
+typeset -r ARCH="x86_64"
+typeset -r BUILD="$EPOCHSECONDS"  # Zsh built-in timestamp
+typeset -r MAINTAINER="Your Name <your.email@example.com>"
+
+# Directories (read-only constants)
+typeset -r BUILD_DIR="${HOME}/build/${PKGNAME}-${VERSION}-${BUILD}"
+typeset -r STAGING_DIR="${BUILD_DIR}/staging"
+typeset -r OPT_DIR="/opt/${PKGNAME}@${VERSION}#${BUILD}"
+typeset -r SOURCE_URL="https://downloads.vivaldi.com/stable/vivaldi-stable-${VERSION}.${ARCH}.rpm"
+typeset -r SOURCE_FILE="${BUILD_DIR}/${PKGNAME}-stable-${VERSION}.${ARCH}.rpm"
+
+# Function to check dependencies
+check_deps() {
+	local -a deps=(curl rpm2cpio cpio)
+	for dep in $deps; do
+		(( $+commands[$dep] )) || { print "$dep is required. Install it first."; exit 1 }
+	done
+}
+
+# Main build process
+main() {
+	check_deps
+	print "Latest version detected: $VERSION"
+	print "Build number (Unix timestamp): $BUILD"
+	mkdir -p "$BUILD_DIR"
+	print "Downloading $SOURCE_FILE..."
+	curl -s -o "$SOURCE_FILE" "$SOURCE_URL"
+	print "Extracting $SOURCE_FILE..."
+	rm -rf "$STAGING_DIR"
+	mkdir -p "$STAGING_DIR"
+	pushd "$BUILD_DIR" >/dev/null
+	rpm2cpio "$SOURCE_FILE" | cpio -idmv -D "$STAGING_DIR" &>/dev/null
+	popd >/dev/null
+	print "Extracted to $STAGING_DIR."
+	print "Run 'sudo engram-build.zsh install' to install to $OPT_DIR."
+}
+
+# Install function (requires sudo)
+install() {
+	(( $EUID != 0 )) && { print "Install must be run as root. Use 'sudo engram-build.zsh install'."; exit 1 }
+	print "Installing to $OPT_DIR..."
+	sudo mkdir -p "$OPT_DIR"
+	sudo cp -r "$STAGING_DIR/usr/"* "$OPT_DIR/"
+	sudo chown -R root:root "$OPT_DIR"
+	sudo chmod -R u+w,go+r "$OPT_DIR"
+	sudo find "$OPT_DIR" -type d -exec chmod go+x {} +
+	print "Build complete! $PKGNAME $VERSION (build $BUILD) is installed to $OPT_DIR."
+	print "Use 'sudo engram-pkg.zsh i $PKGNAME $VERSION#$BUILD' or 'sudo engram-pkg.zsh u $PKGNAME' to make it active."
+}
+
+# Clean function
+clean() {
+	print "Cleaning up..."
+	rm -rf "$BUILD_DIR"
+	print "Temporary files removed."
+}
+
+# Argument handling with Zsh case
+case "${1:-build}" in
+	build)  main    ;;
+	install)install ;;
+	clean)  clean   ;;
+	*)
+		print "Usage: engram-build.zsh [build|install|clean]"
+        	print "  build: Download and extract RPM (non-root)"
+        	print "  install: Install to /opt (requires sudo)"
+        	print "  clean: Remove build directory"
+        	exit 1
+        	;;
+esac
